@@ -6,7 +6,9 @@ use opus::{Channels, Decoder, Encoder};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::slice;
+use std::sync::Arc;
 use tokio::net::{UdpSocket, lookup_host};
+use tokio::sync::Mutex;
 
 use crate::implementations::pulseaudio::{PulseAudioConsumer, PulseAudioProducer};
 use rand::prelude::*;
@@ -55,11 +57,12 @@ impl Consumer for FileConsumer {
 }
 
 /// A network consumer that takes audio data and sends it over UDP
-struct NetworkConsumer {
-    socket: UdpSocket,
+#[derive(Clone)]
+struct NetworkClient {
+    socket: Arc<UdpSocket>,
 }
 
-impl NetworkConsumer {
+impl NetworkClient {
     async fn new(addr: &str) -> Result<Self, ErrorKind> {
         info!("Connecting to {}", addr);
         let result = lookup_host(addr)
@@ -72,9 +75,14 @@ impl NetworkConsumer {
         debug!("Connecting to {}", addr);
         let consumer = UdpSocket::bind("0.0.0.0:0")
             .await
-            .map(|s| NetworkConsumer { socket: s })
+            .map(|s| NetworkClient {
+                socket: Arc::new(s),
+            })
             .map_err(|e| ErrorKind::InitializationError2(e.to_string()))?;
-        debug!("Socket bound to {}", consumer.socket.local_addr().unwrap());
+        debug!(
+            "Socket bound to {}",
+            consumer.socket.local_addr().unwrap()
+        );
         consumer
             .socket
             .connect(addr)
@@ -85,7 +93,7 @@ impl NetworkConsumer {
     }
 }
 
-impl Consumer for NetworkConsumer {
+impl Consumer for NetworkClient {
     fn consume(&mut self, data: &[u8]) -> Result<usize, ErrorKind> {
         // Note: This is a blocking call; in a real application, consider using async methods
         match self.socket.try_send(data) {
@@ -133,9 +141,16 @@ fn main() {
             client = true;
         }
         if client {
-            send_audio(ip).await;
+            let mut network_client = NetworkClient::new(&ip).await.unwrap();
+            let client_clone = NetworkClient {
+                socket: network_client.socket.clone(),
+            };
+            tokio::spawn(async move { send_audio(&mut network_client).await });
+            receive_audio(client_clone.socket).await;
         } else if server {
-            receive_audio().await;
+            let listener = UdpSocket::bind("0.0.0.0:1234").await.unwrap();
+            info!("Listening on 0.0.0.0:1234");
+            receive_audio(Arc::new(listener)).await;
         } else {
             eprintln!("Must specify either --client or --server");
         }
@@ -152,10 +167,9 @@ fn help() {
     std::process::exit(0);
 }
 
-async fn receive_audio() {
+async fn receive_audio(listener: Arc<UdpSocket>) {
     let mut audio_consumer = PulseAudioConsumer::new().unwrap();
-    let listener = UdpSocket::bind("0.0.0.0:1234").await.unwrap();
-    info!("Listening on 0.0.0.0:1234");
+    info!("Ready to receive audio");
     loop {
         let mut buf = [0u8; BUF_SIZE as usize];
         let (len, addr) = listener.recv_from(&mut buf).await.unwrap();
@@ -169,13 +183,12 @@ async fn receive_audio() {
     }
 }
 
-async fn send_audio(addr: String) {
+async fn send_audio(consumer: &mut NetworkClient) {
     // Can be opened with audacity as raw file, signed 16 bit PCM, 44100 Hz, stereo
     //let mut file_consumer = FileConsumer::new("output.pcm").unwrap();
     //let mut audio_consumer = PulseAudioConsumer::new().unwrap();
-    let mut network_consumer = NetworkConsumer::new(&addr).await.unwrap();
     let mut audio_producer = PulseAudioProducer::new().unwrap();
-    let consumers: &mut [&mut dyn Consumer] = &mut [&mut network_consumer];
+    let consumers: &mut [&mut dyn Consumer] = &mut [consumer];
     let mut data = vec![0u8; BUF_SIZE as usize];
     let mut encoded_data = [0u8; BUF_SIZE as usize];
     let mut decoded_data = vec![0i16; FRAME_SIZE * CHANNELS];
