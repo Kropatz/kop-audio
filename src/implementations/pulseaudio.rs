@@ -91,7 +91,7 @@ impl Consumer for PulseAudioConsumer {
     fn consume(&mut self, data: &[u8]) -> Result<usize, ErrorKind> {
         match self.endpoint.write(data) {
             Ok(_) => Ok(data.len()),
-            Err(_) => Err(ErrorKind::WriteError),
+            Err(e) => Err(ErrorKind::WriteError(format!("{:?}", e))),
         }
     }
 }
