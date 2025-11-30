@@ -1,6 +1,6 @@
 use libpulse_binding as pulse;
 use libpulse_simple_binding as psimple;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use opus::Application::Voip;
 use opus::{Channels, Decoder, Encoder};
 use std::fs::OpenOptions;
@@ -11,9 +11,11 @@ use tokio::net::{UdpSocket, lookup_host};
 use tokio::sync::Mutex;
 
 use crate::implementations::pulseaudio::{PulseAudioConsumer, PulseAudioProducer};
+use crate::servers::server::{MessageType, encode_message, server_loop};
 use rand::prelude::*;
 
 mod implementations;
+mod servers;
 const SAMPLE_RATE: u32 = 48000;
 const CHANNELS: usize = 2;
 const BUF_SIZE: u32 = 3840; // 20ms of stereo 48kHz 16-bit audio = 48000 samples/sec * 0.02 sec * 2 channels * 2 bytes/sample = 3840 bytes
@@ -26,6 +28,7 @@ enum ErrorKind {
     WriteError(String),
     ReadError,
 }
+
 trait AudioProducer {
     fn produce(&mut self, data: &mut [u8]) -> Result<(), ErrorKind>;
 }
@@ -92,6 +95,9 @@ impl NetworkClient {
             .connect(addr)
             .await
             .map_err(|e| ErrorKind::InitializationError2(e.to_string()))?;
+        let _ = consumer
+            .socket
+            .try_send(&encode_message(MessageType::Hello, &[]));
         debug!("Socket connected to {}", addr);
 
         Ok(consumer)
@@ -123,11 +129,14 @@ impl Consumer for NetworkClient {
             n,
         );
         // Note: This is a blocking call; in a real application, consider using async methods
-        match self.socket.try_send(&self.encoded_data[..n]) {
+        match self
+            .socket
+            .try_send(&encode_message(MessageType::Audio, &self.encoded_data[..n]))
+        {
             Ok(bytes_sent) => {
                 debug!("Sent {} bytes", bytes_sent);
                 Ok(bytes_sent)
-            },
+            }
             Err(e) => Err(ErrorKind::WriteError(e.to_string())),
         }
     }
@@ -178,7 +187,8 @@ fn main() {
         } else if server {
             let listener = UdpSocket::bind("0.0.0.0:1234").await.unwrap();
             info!("Listening on 0.0.0.0:1234");
-            receive_audio(Arc::new(listener)).await;
+            //receive_audio(Arc::new(listener)).await;
+            server_loop(listener).await;
         } else {
             eprintln!("Must specify either --client or --server");
         }
