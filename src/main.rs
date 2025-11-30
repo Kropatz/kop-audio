@@ -68,6 +68,7 @@ fn main() {
             client = true;
         }
         if client {
+            //todo: some way to mute and deafen
             let mut network_client = NetworkClient::new(&ip).await.unwrap();
             let socket = network_client.socket.clone();
             tokio::spawn(async move { send_audio(&mut network_client).await });

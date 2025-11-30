@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tokio::net::{UdpSocket, lookup_host};
 
 use crate::implementations::pulseaudio::{PulseAudioConsumer, PulseAudioProducer};
-use crate::server::{MessageType, encode_message};
+use crate::server::{Message, MessageType, decode_message, encode_message};
 use crate::{AudioProducer, BUF_SIZE, CHANNELS, Consumer, ErrorKind, FRAME_SIZE, SAMPLE_RATE};
 
 /// A network consumer that takes audio data and sends it over UDP
@@ -92,29 +92,35 @@ impl Consumer for NetworkClient {
     }
 }
 
-
 pub async fn receive_audio(listener: Arc<UdpSocket>) {
     let mut audio_consumer = PulseAudioConsumer::new().unwrap();
     let mut decoder = opus_decoder();
-    let mut encoded_data = [0u8; BUF_SIZE as usize];
+    let mut data = [0u8; BUF_SIZE as usize + 1]; // MSG type byte
     let mut decoded_data = vec![0i16; FRAME_SIZE * CHANNELS];
     info!("Ready to receive audio");
     loop {
-        let (len, addr) = listener.recv_from(&mut encoded_data).await.unwrap();
-        debug!("Received {} bytes from {}", len, addr);
-        let b = decoder
-            .decode(&encoded_data[..len], &mut decoded_data, false)
-            .unwrap();
-        match audio_consumer.consume(unsafe {
-            slice::from_raw_parts(
-                decoded_data.as_ptr() as *const u8,
-                b * CHANNELS * std::mem::size_of::<i16>(),
-            )
-        }) {
-            Ok(_) => {}
-            Err(e) => {
-                error!("Error consuming data: {:?}", e);
+        let (len, addr) = listener.recv_from(&mut data).await.unwrap();
+
+        let msg = decode_message(&data[..len]);
+        match msg {
+            Message::Audio(encoded_data) => {
+                debug!("Received {} bytes from {}", len, addr);
+                let b = decoder
+                    .decode(&encoded_data[..len-1], &mut decoded_data, false)
+                    .unwrap();
+                match audio_consumer.consume(unsafe {
+                    slice::from_raw_parts(
+                        decoded_data.as_ptr() as *const u8,
+                        b * CHANNELS * std::mem::size_of::<i16>(),
+                    )
+                }) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        error!("Error consuming data: {:?}", e);
+                    }
+                }
             }
+            _ => {}
         }
     }
 }

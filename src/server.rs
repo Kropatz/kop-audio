@@ -20,8 +20,14 @@ pub enum Message<'a> {
     Unknown(u8, &'a [u8]),
 }
 
+struct ClientInfo {
+    addr: std::net::SocketAddr,
+    last_active: std::time::Instant,
+}
+
 pub async fn server_loop(listener: UdpSocket) {
     let mut buf = [0u8; BUF_SIZE as usize];
+    let mut clients: Vec<ClientInfo> = Vec::new();
     loop {
         let (len, addr) = match listener.recv_from(&mut buf).await {
             Ok(res) => res,
@@ -30,6 +36,21 @@ pub async fn server_loop(listener: UdpSocket) {
                 continue;
             }
         };
+        let mut is_new_client = true;
+        for client in &mut clients {
+            if client.addr == addr {
+                client.last_active = std::time::Instant::now();
+                is_new_client = false;
+            }
+        }
+        if is_new_client {
+            info!("New client connected: {}", addr);
+            clients.push(ClientInfo {
+                addr,
+                last_active: std::time::Instant::now(),
+            });
+        }
+        //todo: clean up inactive clients periodically
         let msg = decode_message(&buf[..len]);
         match msg {
             Message::Audio(data) => {
@@ -38,6 +59,14 @@ pub async fn server_loop(listener: UdpSocket) {
                     data.len(),
                     addr
                 );
+                for client in &clients {
+                    if client.addr != addr {
+                        match listener.send_to(&buf[..len], client.addr).await {
+                            Ok(_) => println!("Forwarded audio packet to {}", client.addr),
+                            Err(e) => error!("Error forwarding audio to {}: {:?}", client.addr, e),
+                        }
+                    }
+                }
                 // Here you would handle the audio data, e.g., play it or forward it
             }
             Message::Ping => {
