@@ -105,7 +105,7 @@ impl Consumer for NetworkClient {
 
         let samples_needed = FRAME_SIZE * CHANNELS;
         let pcm = &pcm[..samples_needed];
-        if is_silence(pcm, 600.0) {
+        if is_silence(pcm, 200.0) {
             if self.hangover == 0 {
                 return Ok(0);
             }
