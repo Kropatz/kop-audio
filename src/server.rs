@@ -89,6 +89,7 @@ pub async fn server_loop(listener: UdpSocket) {
                     data.len()
                 );
             }
+            _ => {}
         }
     }
 }

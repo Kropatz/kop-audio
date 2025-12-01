@@ -3,11 +3,14 @@ use opus::Application::Voip;
 use opus::{Channels, Decoder, Encoder};
 use std::slice;
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender};
 use tokio::net::{UdpSocket, lookup_host};
 
 use crate::implementations::pulseaudio::{PulseAudioConsumer, PulseAudioProducer};
 use crate::server::{Message, MessageType, decode_message, encode_message};
-use crate::{AudioProducer, BUF_SIZE, CHANNELS, Consumer, ErrorKind, FRAME_SIZE, SAMPLE_RATE};
+use crate::{
+    AudioProducer, BUF_SIZE, CHANNELS, Consumer, ErrorKind, FRAME_SIZE, SAMPLE_RATE, client,
+};
 
 /// A network consumer that takes audio data and sends it over UDP
 pub struct NetworkClient {
@@ -16,10 +19,26 @@ pub struct NetworkClient {
     encoder: Encoder,
     hangover: usize,
     hangover_limit: usize,
+
+    // communication with TUI
+    tx: Option<Sender<client::TuiMessage>>,
+    rx: Option<Receiver<client::TuiMessage>>,
+}
+pub enum TuiMessage {
+    Connect,
+    Disconnect,
+    ToggleMute,
+    ToggleDeafen,
+    TransmitAudio(bool),
+    Exit,
 }
 
 impl NetworkClient {
-    pub async fn new(addr: &str) -> Result<Self, ErrorKind> {
+    pub async fn new(
+        addr: &str,
+        tx: Option<Sender<client::TuiMessage>>,
+        rx: Option<Receiver<client::TuiMessage>>,
+    ) -> Result<Self, ErrorKind> {
         info!("Connecting to {}", addr);
         let result = lookup_host(addr)
             .await
@@ -37,6 +56,8 @@ impl NetworkClient {
                 encoder: opus_encoder(),
                 hangover: 0,
                 hangover_limit: 10, // number of consecutive silent frames to send before stopping
+                tx,
+                rx,
             })
             .map_err(|e| ErrorKind::InitializationError2(e.to_string()))?;
         debug!("Socket bound to {}", consumer.socket.local_addr().unwrap());
@@ -52,6 +73,12 @@ impl NetworkClient {
 
         Ok(consumer)
     }
+
+    fn send_tui_message(&self, message: client::TuiMessage) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(message);
+        }
+    }
 }
 
 impl Consumer for NetworkClient {
@@ -63,6 +90,7 @@ impl Consumer for NetworkClient {
         let pcm = &pcm[..samples_needed];
         if is_silence(pcm, 200.0) {
             if self.hangover == 0 {
+                self.send_tui_message(client::TuiMessage::TransmitAudio(false));
                 return Ok(0);
             }
             self.hangover -= 1;
@@ -79,6 +107,7 @@ impl Consumer for NetworkClient {
             n,
         );
         // Note: This is a blocking call; in a real application, consider using async methods
+        self.send_tui_message(client::TuiMessage::TransmitAudio(true));
         match self
             .socket
             .try_send(&encode_message(MessageType::Audio, &self.encoded_data[..n]))
@@ -106,7 +135,7 @@ pub async fn receive_audio(listener: Arc<UdpSocket>) {
             Message::Audio(encoded_data) => {
                 debug!("Received {} bytes from {}", len, addr);
                 let b = decoder
-                    .decode(&encoded_data[..len-1], &mut decoded_data, false)
+                    .decode(&encoded_data[..len - 1], &mut decoded_data, false)
                     .unwrap();
                 match audio_consumer.consume(unsafe {
                     slice::from_raw_parts(
