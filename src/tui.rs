@@ -85,7 +85,7 @@ impl App {
                 match key_event.code {
                     event::KeyCode::Char('d') | event::KeyCode::Char('D') => {
                         self.client_state.deafen = !self.client_state.deafen;
-                        //let _ = self.tx.send(client::TuiMessage::ToggleDeafen);
+                        let _ = self.tx_receive_audio.send(client::TuiMessage::ToggleDeafen);
                     }
                     event::KeyCode::Char('m') | event::KeyCode::Char('M') => {
                         self.client_state.mute = !self.client_state.mute;

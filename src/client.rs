@@ -173,6 +173,10 @@ pub async fn receive_audio(
             _ => {}
         }
         let (len, addr) = listener.recv_from(&mut data).await.unwrap();
+        if deafened {
+            debug!("Client is deafened, not playing audio");
+            continue;
+        }
 
         let msg = decode_message(&data[..len]);
         match msg {
