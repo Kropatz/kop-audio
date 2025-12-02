@@ -12,7 +12,8 @@ use crate::channel_util::send_tui_message;
 use crate::implementations::pulseaudio::{PulseAudioConsumer, PulseAudioProducer};
 use crate::server::{Message, MessageType, decode_message, encode_message};
 use crate::{
-    AudioProducer, BUF_SIZE, CHANNELS, Consumer, ErrorKind, FRAME_SIZE, SAMPLE_RATE, channel_util, client
+    AudioProducer, BUF_SIZE, CHANNELS, Consumer, ErrorKind, FRAME_SIZE, MSG_SIZE, SAMPLE_RATE,
+    channel_util, client,
 };
 
 /// A network consumer that takes audio data and sends it over UDP
@@ -34,6 +35,8 @@ pub enum TuiMessage {
     ToggleMute,
     ToggleDeafen,
     TransmitAudio(bool),
+    NewClient(std::net::SocketAddr),
+    DeleteClient(std::net::SocketAddr),
     Exit,
 }
 fn receive_tui_message(rx: &Option<Receiver<client::TuiMessage>>) -> Option<client::TuiMessage> {
@@ -81,52 +84,26 @@ impl NetworkClient {
             .connect(addr)
             .await
             .map_err(|e| ErrorKind::InitializationError2(e.to_string()))?;
-        let _ = consumer
-            .socket
-            .try_send(&encode_message(MessageType::Hello, &[]));
-
-        let mut buf = [0u8; BUF_SIZE as usize];
-        match timeout(Duration::from_secs(1), consumer.socket.recv(&mut buf)).await {
-            Ok(Ok(len)) => {
-                let msg = decode_message(&buf[..len]);
-                match msg {
-                    Message::Hello(_) => {
-                        info!("Connected to server at {}", addr);
-                        send_tui_message(TuiMessage::Connect, &consumer.tx);
-                    }
-                    _ => {
-                        return Err(ErrorKind::InitializationError2(
-                            "Did not receive Hello from server".to_string(),
-                        ));
-                    }
-                }
-            }
-            Ok(Err(e)) => {
-                return Err(ErrorKind::InitializationError2(e.to_string()));
-            }
-            Err(_) => {
-                return Err(ErrorKind::InitializationError2(
-                    "Timeout waiting for Hello from server".to_string(),
-                ));
-            }
-        }
-        debug!("Socket connected to {}", addr);
 
         Ok(consumer)
     }
 
+    //TODO: rethink architecture here
+    //  Maybe all data should be sent to a queue, and receive_audio should read from it?
+    //  To avoid blocking on socket.recv_from in receive_audio and handle tui messages
     pub async fn start(
         mut self,
         is_tui: bool,
         rx_receive_audio: Option<Receiver<client::TuiMessage>>,
     ) -> () {
         let socket = self.socket.clone();
+        let tx = self.tx.clone();
 
         tokio::spawn(async move { client::send_audio(&mut self).await });
         if is_tui {
-            tokio::spawn(async move { client::receive_audio(socket, rx_receive_audio).await });
+            tokio::spawn(async move { client::receive_audio(socket, rx_receive_audio, tx).await });
         } else {
-            client::receive_audio(socket, rx_receive_audio).await;
+            client::receive_audio(socket, rx_receive_audio, tx).await;
         }
     }
 }
@@ -183,12 +160,17 @@ impl Consumer for NetworkClient {
 }
 
 pub async fn receive_audio(
-    listener: Arc<UdpSocket>,
+    socket: Arc<UdpSocket>,
     rx_receive_audio: Option<Receiver<client::TuiMessage>>,
+    tx: Option<Sender<client::TuiMessage>>,
 ) {
+    socket
+        .try_send(&encode_message(MessageType::Hello, &[]))
+        .unwrap();
+
     let mut audio_consumer = PulseAudioConsumer::new().unwrap();
     let mut decoder = opus_decoder();
-    let mut data = [0u8; BUF_SIZE as usize + 1]; // MSG type byte
+    let mut data = [0u8; MSG_SIZE as usize];
     let mut decoded_data = vec![0i16; FRAME_SIZE * CHANNELS];
     let mut deafened = false;
     info!("Ready to receive audio");
@@ -197,17 +179,24 @@ pub async fn receive_audio(
             Some(client::TuiMessage::ToggleDeafen) => {
                 deafened = !deafened;
             }
+            Some(client::TuiMessage::Exit) => {
+                // TODO: doesn't work
+                socket.try_send(&encode_message(MessageType::Bye, &[])).unwrap();
+                send_tui_message(TuiMessage::Disconnect, &tx);
+                debug!("Exiting receive_audio loop");
+            }
             _ => {}
         }
-        let (len, addr) = listener.recv_from(&mut data).await.unwrap();
-        if deafened {
-            debug!("Client is deafened, not playing audio");
-            continue;
-        }
+        let (len, addr) = socket.recv_from(&mut data).await.unwrap();
 
         let msg = decode_message(&data[..len]);
+        debug!("Received message of type {:?}", msg);
         match msg {
             Message::Audio(encoded_data) => {
+                if deafened {
+                    debug!("Client is deafened, not playing audio");
+                    continue;
+                }
                 debug!("Received {} bytes from {}", len, addr);
                 let b = decoder
                     .decode(&encoded_data[..len - 1], &mut decoded_data, false)
@@ -224,8 +213,27 @@ pub async fn receive_audio(
                     }
                 }
             }
+            Message::NewClient(encoded_data) => {
+                let addr_str = String::from_utf8_lossy(encoded_data);
+                if let Ok(addr) = addr_str.parse::<std::net::SocketAddr>() {
+                    info!("New client connected: {}", addr);
+                    let _ = send_tui_message(client::TuiMessage::NewClient(addr), &tx);
+                }
+            }
+            Message::DeleteClient(encoded_data) => {
+                let addr_str = String::from_utf8_lossy(encoded_data);
+                if let Ok(addr) = addr_str.parse::<std::net::SocketAddr>() {
+                    info!("Client disconnected: {}", addr);
+                    let _ = send_tui_message(client::TuiMessage::DeleteClient(addr), &tx);
+                }
+            }
+            Message::Bye => {
+                std::process::exit(0);
+            }
             _ => {}
         }
+
+        send_tui_message(TuiMessage::Connect, &tx);
     }
 }
 

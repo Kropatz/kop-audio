@@ -15,6 +15,8 @@ pkgs.mkShell rec {
       fi
       sudo perf record -F 999 -p $PID -g
       sudo chown $USER:$(id -gn $USER) perf.data
+      perf script -F +pid > /tmp/test.perf
+      echo "Recording complete. Firefox-profiler compatible output saved to /tmp/test.perf"
       '')
   ];
 

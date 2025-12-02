@@ -1,18 +1,21 @@
+use std::fs::File;
+use std::io::Write;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, mpsc};
 
 use libpulse_binding as pulse;
 use libpulse_simple_binding as psimple;
-use log::info;
-use tokio::net::{UdpSocket};
+use log::{LevelFilter, info};
+use tokio::net::UdpSocket;
+use tokio::signal;
 
-use crate::client::{NetworkClient};
+use crate::client::NetworkClient;
 
+mod channel_util;
 mod client;
 mod implementations;
 mod server;
 mod tui;
-mod channel_util;
 
 const SAMPLE_RATE: u32 = 48000;
 const CHANNELS: usize = 2;
@@ -52,6 +55,8 @@ fn main() {
         let mut server = false;
         let mut client = false;
         let mut tui = false;
+        let mut tui_set = false;
+        let mut debug = false;
         let mut ip = "kopatz.dev:1234".to_string();
         let mut args = std::env::args().skip(1).peekable();
         let (tx_tui, rx_tui): (Sender<client::TuiMessage>, Receiver<client::TuiMessage>) =
@@ -72,7 +77,10 @@ fn main() {
                     client = true;
                     tui = true;
                 }
-                "--no-tui" => tui = false,
+                "--no-tui" => {
+                    tui = false;
+                    tui_set = true;
+                }
                 "--ip" => {
                     if let Some(val) = args.next() {
                         ip = val;
@@ -81,6 +89,7 @@ fn main() {
                         std::process::exit(1);
                     }
                 }
+                "--debug" => debug = true,
                 "--help" => help(),
                 "--h" => help(),
                 other => {
@@ -95,15 +104,36 @@ fn main() {
             return;
         } else if !server && !client {
             client = true;
-            tui = true;
+            if !tui_set {
+                tui = true;
+            }
         }
-        if (!tui) {
+        if !tui {
             env_logger::Builder::from_env(env_logger::Env::default().filter_or("RUST_LOG", "info"))
                 .init();
         } else {
-            env_logger::Builder::new()
-                .filter_level(log::LevelFilter::Off)
-                .init();
+            if debug {
+                let target = Box::new(File::create("/tmp/log.txt").expect("Can't create file"));
+                env_logger::Builder::new()
+                    .filter(None, LevelFilter::Debug)
+                    .target(env_logger::Target::Pipe(target))
+                    .format(|buf, record| {
+                        writeln!(
+                            buf,
+                            "[{} {} {}:{}] {}",
+                            "now",
+                            record.level(),
+                            record.file().unwrap_or("unknown"),
+                            record.line().unwrap_or(0),
+                            record.args()
+                        )
+                    })
+                    .init();
+            } else {
+                env_logger::Builder::new()
+                    .filter_level(log::LevelFilter::Off)
+                    .init();
+            }
         }
         if client {
             //todo: some way to mute and deafen
@@ -120,8 +150,20 @@ fn main() {
                 network_client.start(tui, None).await;
             }
             if tui {
-                tui::App::new(rx_tui, tx_send_audio, tx_receive_audio);
+                tokio::spawn(async move { tui::App::new(rx_tui, tx_send_audio, tx_receive_audio) });
+                std::process::exit(0);
             }
+            // TODO: wait for ctrl-c in non-tui mode, send Bye to server
+            // TODO: probably need a mpmc channel for that
+            //match signal::ctrl_c().await {
+            //    Ok(()) => {
+            //        std::process::exit(0);
+            //    }
+            //    Err(err) => {
+            //        eprintln!("Unable to listen for shutdown signal: {}", err);
+            //        // we also shut down in case of error
+            //    }
+            //}
         } else if server {
             let listener = UdpSocket::bind("0.0.0.0:1234").await.unwrap();
             info!("Listening on 0.0.0.0:1234");

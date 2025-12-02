@@ -1,8 +1,9 @@
+use log::debug;
 use ratatui::{
     DefaultTerminal, Frame,
     buffer::Buffer,
     crossterm::event::{self, Event, KeyEventKind},
-    layout::Rect,
+    layout::{Constraint, Layout, Rect},
     style::Stylize,
     symbols::border,
     text::{Line, Text},
@@ -22,6 +23,9 @@ use crate::{ClientState, client};
 #[derive(Debug)]
 pub struct App {
     client_state: ClientState,
+
+    main_widget: UserListWidget,
+
     rx: Receiver<client::TuiMessage>,
     tx_send_audio: Sender<client::TuiMessage>,
     tx_receive_audio: Sender<client::TuiMessage>,
@@ -38,6 +42,7 @@ impl App {
             rx,
             tx_send_audio,
             tx_receive_audio,
+            main_widget: UserListWidget { users: vec![] }
         };
         let terminal = ratatui::init();
         let result = app.run(terminal);
@@ -45,21 +50,32 @@ impl App {
     }
 
     fn run(&mut self, mut terminal: DefaultTerminal) -> Result<()> {
+        let mut should_draw = true;
         while !self.client_state.exit {
-            self.handle_tui_messages();
-            terminal.draw(|frame| self.draw(frame))?;
+            if should_draw {
+                terminal.draw(|frame| self.draw(frame))?;
+            }
+            should_draw = self.handle_tui_messages();
             if let Ok(true) = event::poll(Duration::from_millis(100)) {
                 self.handle_event(event::read()?);
+                should_draw = true;
             }
         }
         Ok(())
     }
 
     fn draw(&self, frame: &mut Frame) {
-        frame.render_widget(self, frame.area());
+        let layout = Layout::default()
+            .direction(ratatui::layout::Direction::Vertical)
+            .constraints(vec![Constraint::Min(5), Constraint::Percentage(100)])
+            .spacing(-1)
+            .split(frame.area());
+        frame.render_widget(self, layout[0]);
+        frame.render_widget(&self.main_widget, layout[1]);
     }
 
-    fn handle_tui_messages(&mut self) {
+    fn handle_tui_messages(&mut self) -> bool {
+        let mut updated = false;
         while let Ok(message) = self.rx.try_recv() {
             match message {
                 client::TuiMessage::Connect => {
@@ -72,9 +88,17 @@ impl App {
                 client::TuiMessage::TransmitAudio(sending) => {
                     self.client_state.sending_audio = sending;
                 }
+                client::TuiMessage::NewClient(addr)=> {
+                    self.main_widget.users.push(addr.to_string());
+                }
+                client::TuiMessage::DeleteClient(addr)=> {
+                    self.main_widget.users.retain(|user| user != &addr.to_string());
+                }
                 _ => {}
             }
+            updated = true;
         }
+        updated
     }
 
     fn handle_event(&mut self, event: Event) {
@@ -93,7 +117,8 @@ impl App {
                     }
                     event::KeyCode::Char('q') | event::KeyCode::Char('Q') => {
                         self.client_state.exit = true;
-                        //let _ = self.tx.send(client::TuiMessage::Exit);
+                        let _ = self.tx_receive_audio.send(client::TuiMessage::Exit);
+                        debug!("Exiting TUI upon user request");
                     }
                     _ => {}
                 }
@@ -145,11 +170,35 @@ impl Widget for &App {
             "<Q> ".blue().bold(),
         ]);
 
-        let block = Block::bordered()
-            .title(status_line.centered())
-            .title_bottom(instructions.centered())
-            .border_set(border::THICK);
+        let layout = Layout::default()
+            .spacing(1)
+            .direction(ratatui::layout::Direction::Vertical)
+            .constraints(vec![Constraint::Percentage(25), Constraint::Percentage(75)])
+            .split(area);
 
-        Paragraph::new("").centered().block(block).render(area, buf);
+        Paragraph::new(status_line.centered()).render(layout[0], buf);
+        Paragraph::new(instructions.centered()).render(layout[1], buf);
+    }
+}
+
+#[derive(Debug)]
+struct UserListWidget {
+    users: Vec<String>,
+}
+
+impl Widget for &UserListWidget {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let block = Block::bordered()
+            .title("Users")
+            .border_set(border::THICK);
+        let inner_area = block.inner(area);
+        let user_lines: Vec<Line> = self
+            .users
+            .iter()
+            .map(|user| Line::from(user.as_str()))
+            .collect();
+        let paragraph = Paragraph::new(Text::from(user_lines));
+        block.render(area, buf);
+        paragraph.render(inner_area, buf);
     }
 }
