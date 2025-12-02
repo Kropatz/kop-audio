@@ -28,6 +28,7 @@ struct ClientInfo {
 pub async fn server_loop(listener: UdpSocket) {
     let mut buf = [0u8; BUF_SIZE as usize];
     let mut clients: Vec<ClientInfo> = Vec::new();
+    let mut check_counter = 0;
     loop {
         let (len, addr) = match listener.recv_from(&mut buf).await {
             Ok(res) => res,
@@ -49,6 +50,14 @@ pub async fn server_loop(listener: UdpSocket) {
                 addr,
                 last_active: std::time::Instant::now(),
             });
+        }
+        check_counter += 1;
+        if check_counter >= 100 {
+            let now = std::time::Instant::now();
+            let size_before = clients.len();
+            clients.retain(|client| now.duration_since(client.last_active).as_secs() < 500);
+            debug!("Cleaned up inactive clients. Before: {}, After: {}", size_before, clients.len());
+            check_counter = 0;
         }
         //todo: clean up inactive clients periodically
         let msg = decode_message(&buf[..len]);
