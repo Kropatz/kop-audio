@@ -1,27 +1,19 @@
+use std::net::SocketAddr;
+
 use crate::BUF_SIZE;
+use bincode::{Decode, Encode, config};
 use log::{debug, error, info, warn};
 use tokio::net::UdpSocket;
 
-#[repr(u8)]
-#[derive(Debug, Clone, Copy)]
-pub enum MessageType {
-    Audio = 1,
-    Ping = 2,
-    Hello = 3,
-    Bye = 4,
-    NewClient = 5,
-    DeleteClient = 6,
-}
-
-#[derive(Debug)]
-pub enum Message<'a> {
-    Audio(&'a [u8]), // decoded audio packet
+#[derive(Encode, Decode, PartialEq, Debug)]
+pub enum Message {
+    Audio(Vec<u8>), // decoded audio packet
     Ping,
-    Hello(&'a str), // maybe UTF-8
-    NewClient(&'a [u8]),
-    DeleteClient(&'a [u8]),
+    Hello(std::net::SocketAddr), // maybe UTF-8
+    NewClient(std::net::SocketAddr),
+    DeleteClient(std::net::SocketAddr),
     Bye,
-    Unknown(u8, &'a [u8]),
+    Unknown(Vec<u8>),
 }
 
 struct ClientInfo {
@@ -99,32 +91,37 @@ pub async fn server_loop(socket: UdpSocket) {
                 info!("Received hello from {}: {}", addr, text);
                 // send all clients the new client's hello message
                 match socket
-                    .send_to(&encode_message(MessageType::Hello, text.as_bytes()), addr)
+                    .send_to(&encode_message(&Message::Hello(text)), addr)
                     .await
                 {
                     Ok(_) => debug!("Sent hello ack to {}", addr),
                     Err(e) => error!("Error sending hello ack to {}: {:?}", addr, e),
                 }
-                // Notify other clients about the new client, and the new client about existing clients
-                for client in &clients {
-                    if client.addr != addr {
-                        // Notify existing clients about the new client
-                        let new_client_msg =
-                            encode_message(MessageType::NewClient, addr.to_string().as_bytes());
-                        match socket.send_to(&new_client_msg, client.addr).await {
-                            Ok(_) => debug!("Sent new client message to {}", client.addr),
-                            Err(e) => {
-                                error!("Error sending new client msg to {}: {:?}", client.addr, e)
+                // if client list already contains the addr, don't notify others
+                if is_new_client {
+                    debug!("Got new client {}", addr);
+                    // Notify other clients about the new client, and the new client about existing clients
+                    for client in &clients {
+                        if client.addr != addr {
+                            // Notify existing clients about the new client
+                            let new_client_msg = encode_message(&Message::NewClient(addr));
+                            match socket.send_to(&new_client_msg, client.addr).await {
+                                Ok(_) => debug!("Sent new client message to {}", client.addr),
+                                Err(e) => {
+                                    error!(
+                                        "Error sending new client msg to {}: {:?}",
+                                        client.addr, e
+                                    )
+                                }
                             }
-                        }
 
-                        let new_client_msg = encode_message(
-                            MessageType::NewClient,
-                            client.addr.to_string().as_bytes(),
-                        );
-                        match socket.send_to(&new_client_msg, addr).await {
-                            Ok(_) => debug!("Sent new client message to {}", addr),
-                            Err(e) => error!("Error sending new client msg to {}: {:?}", addr, e),
+                            let new_client_msg = encode_message(&Message::NewClient(client.addr));
+                            match socket.send_to(&new_client_msg, addr).await {
+                                Ok(_) => debug!("Sent new client message to {}", addr),
+                                Err(e) => {
+                                    error!("Error sending new client msg to {}: {:?}", addr, e)
+                                }
+                            }
                         }
                     }
                 }
@@ -133,10 +130,9 @@ pub async fn server_loop(socket: UdpSocket) {
                 info!("Received bye from {}", addr);
                 remove_client(&mut clients, &addr, &socket).await;
             }
-            Message::Unknown(kind, data) => {
+            Message::Unknown(data) => {
                 warn!(
-                    "Received unknown message type {} from {}: {} bytes",
-                    kind,
+                    "Received unknown message type from {}: {} bytes",
                     addr,
                     data.len()
                 );
@@ -144,6 +140,15 @@ pub async fn server_loop(socket: UdpSocket) {
             _ => {}
         }
     }
+}
+
+fn contains_client(clients: &Vec<ClientInfo>, addr: &SocketAddr) -> bool {
+    for client in clients {
+        if &client.addr == addr {
+            return true;
+        }
+    }
+    return false;
 }
 
 async fn remove_client(
@@ -161,13 +166,13 @@ async fn remove_client(
         }
     });
     if clients.len() < size_before {
-        let bye_msg = encode_message(MessageType::Bye, &[]);
+        let bye_msg = encode_message(&Message::Bye);
         match socket.send_to(&bye_msg, addr).await {
             Ok(_) => debug!("Sent bye message to {}", addr),
             Err(e) => error!("Error sending bye message to {}: {:?}", addr, e),
         }
         for client in clients.iter() {
-            let delete_msg = encode_message(MessageType::DeleteClient, addr.to_string().as_bytes());
+            let delete_msg = encode_message(&Message::DeleteClient(*addr));
             match socket.send_to(&delete_msg, client.addr).await {
                 Ok(_) => debug!("Sent delete client message to {}", client.addr),
                 Err(e) => error!(
@@ -179,31 +184,16 @@ async fn remove_client(
     }
 }
 
-pub fn decode_message(buf: &[u8]) -> Message<'_> {
+pub fn decode_message(buf: &[u8]) -> Message {
     if buf.is_empty() {
-        return Message::Unknown(0, buf);
+        return Message::Unknown(Vec::new());
     }
 
-    let kind = buf[0];
-    let payload = &buf[1..];
-
-    match kind {
-        x if x == MessageType::Audio as u8 => Message::Audio(payload),
-        x if x == MessageType::Ping as u8 => Message::Ping,
-        x if x == MessageType::Hello as u8 => {
-            let text = std::str::from_utf8(payload).unwrap_or("");
-            Message::Hello(text)
-        }
-        x if x == MessageType::Bye as u8 => Message::Bye,
-        x if x == MessageType::NewClient as u8 => Message::NewClient(payload),
-        x if x == MessageType::DeleteClient as u8 => Message::DeleteClient(payload),
-        other => Message::Unknown(other, payload),
-    }
+    return bincode::decode_from_slice(buf, config::standard())
+        .map(|(msg, _)| msg)
+        .unwrap_or(Message::Unknown(buf.to_vec()));
 }
 
-pub fn encode_message(msg_type: MessageType, payload: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(1 + payload.len());
-    out.push(msg_type as u8); // 1-byte message kind marker
-    out.extend_from_slice(payload);
-    out
+pub fn encode_message(msg: &Message) -> Vec<u8> {
+    bincode::encode_to_vec(msg, config::standard()).unwrap()
 }

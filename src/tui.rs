@@ -26,22 +26,19 @@ pub struct App {
 
     main_widget: UserListWidget,
 
-    rx: Receiver<client::TuiMessage>,
-    tx_send_audio: Sender<client::TuiMessage>,
-    tx_receive_audio: Sender<client::TuiMessage>,
+    rx: Receiver<client::ClientMessage>,
+    tx_coordinator: Sender<client::ClientMessage>,
 }
 
 impl App {
     pub fn new(
-        rx: Receiver<client::TuiMessage>,
-        tx_send_audio: Sender<client::TuiMessage>,
-        tx_receive_audio: Sender<client::TuiMessage>,
+        rx: Receiver<client::ClientMessage>,
+        tx_coordinator: Sender<client::ClientMessage>,
     ) {
         let mut app = App {
             client_state: ClientState::default(),
             rx,
-            tx_send_audio,
-            tx_receive_audio,
+            tx_coordinator,
             main_widget: UserListWidget { users: vec![] }
         };
         let terminal = ratatui::init();
@@ -78,20 +75,20 @@ impl App {
         let mut updated = false;
         while let Ok(message) = self.rx.try_recv() {
             match message {
-                client::TuiMessage::Connect => {
+                client::ClientMessage::Connect => {
                     self.client_state.connected = true;
                 }
-                client::TuiMessage::Disconnect => {
+                client::ClientMessage::Disconnect => {
                     self.client_state.connected = false;
                     self.client_state.sending_audio = false;
                 }
-                client::TuiMessage::TransmitAudio(sending) => {
+                client::ClientMessage::TransmitAudio(sending) => {
                     self.client_state.sending_audio = sending;
                 }
-                client::TuiMessage::NewClient(addr)=> {
+                client::ClientMessage::NewClient(addr)=> {
                     self.main_widget.users.push(addr.to_string());
                 }
-                client::TuiMessage::DeleteClient(addr)=> {
+                client::ClientMessage::DeleteClient(addr)=> {
                     self.main_widget.users.retain(|user| user != &addr.to_string());
                 }
                 _ => {}
@@ -109,15 +106,15 @@ impl App {
                 match key_event.code {
                     event::KeyCode::Char('d') | event::KeyCode::Char('D') => {
                         self.client_state.deafen = !self.client_state.deafen;
-                        let _ = self.tx_receive_audio.send(client::TuiMessage::ToggleDeafen);
+                        let _ = self.tx_coordinator.send(client::ClientMessage::ToggleDeafen);
                     }
                     event::KeyCode::Char('m') | event::KeyCode::Char('M') => {
                         self.client_state.mute = !self.client_state.mute;
-                        let _ = self.tx_send_audio.send(client::TuiMessage::ToggleMute);
+                        let _ = self.tx_coordinator.send(client::ClientMessage::ToggleMute);
                     }
                     event::KeyCode::Char('q') | event::KeyCode::Char('Q') => {
                         self.client_state.exit = true;
-                        let _ = self.tx_receive_audio.send(client::TuiMessage::Exit);
+                        let _ = self.tx_coordinator.send(client::ClientMessage::Exit);
                         debug!("Exiting TUI upon user request");
                     }
                     _ => {}

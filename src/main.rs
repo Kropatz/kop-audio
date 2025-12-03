@@ -9,10 +9,14 @@ use log::{LevelFilter, info};
 use tokio::net::UdpSocket;
 use tokio::signal;
 
+use crate::audio::{play_audio, record_audio};
 use crate::client::NetworkClient;
+use crate::coordinator::run_coordinator;
+use crate::implementations::pulseaudio::{PulseAudioConsumer, PulseAudioProducer};
 
-mod channel_util;
+mod audio;
 mod client;
+mod coordinator;
 mod implementations;
 mod server;
 mod tui;
@@ -59,16 +63,27 @@ fn main() {
         let mut debug = false;
         let mut ip = "kopatz.dev:1234".to_string();
         let mut args = std::env::args().skip(1).peekable();
-        let (tx_tui, rx_tui): (Sender<client::TuiMessage>, Receiver<client::TuiMessage>) =
+        let (tx_msg, rx_msg): (
+            Sender<client::ClientMessage>,
+            Receiver<client::ClientMessage>,
+        ) = mpsc::channel();
+        let (tx_tui, rx_tui): (
+            Sender<client::ClientMessage>,
+            Receiver<client::ClientMessage>,
+        ) = mpsc::channel();
+        let (tx_record, rx_record): (
+            Sender<client::ClientMessage>,
+            Receiver<client::ClientMessage>,
+        ) = mpsc::channel();
+        let (tx_playback, rx_playback): (
+            Sender<client::ClientMessage>,
+            Receiver<client::ClientMessage>,
+        ) = mpsc::channel();
+        let (tx_net_out, rx_net_out): (Sender<server::Message>, Receiver<server::Message>) =
             mpsc::channel();
-        let (tx_send_audio, rx_send_audio): (
-            Sender<client::TuiMessage>,
-            Receiver<client::TuiMessage>,
-        ) = mpsc::channel();
-        let (tx_receive_audio, rx_receive_audio): (
-            Sender<client::TuiMessage>,
-            Receiver<client::TuiMessage>,
-        ) = mpsc::channel();
+
+        let (tx_net_in, rx_net_in): (Sender<server::Message>, Receiver<server::Message>) =
+            mpsc::channel();
 
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -137,22 +152,24 @@ fn main() {
         }
         if client {
             //todo: some way to mute and deafen
-            let state = Arc::new(ClientState::default());
-
-            let mut network_client;
+            let mut audio_consumer = PulseAudioConsumer::new().unwrap();
+            let mut audio_producer = PulseAudioProducer::new().unwrap();
+            let tx_msg_clone = tx_msg.clone();
+            tokio::spawn(async move { record_audio(tx_msg_clone, &mut audio_producer, rx_record) });
+            tokio::spawn(async move { play_audio(rx_playback, &mut audio_consumer) });
+            let network_client = NetworkClient::new(&ip, tx_msg.clone()).await.unwrap();
+            network_client.start(rx_net_in, rx_net_out).await;
             if tui {
-                network_client = NetworkClient::new(&ip, Some(tx_tui), Some(rx_send_audio))
-                    .await
-                    .unwrap();
-                network_client.start(tui, Some(rx_receive_audio)).await;
-            } else {
-                network_client = NetworkClient::new(&ip, None, None).await.unwrap();
-                network_client.start(tui, None).await;
+                tokio::spawn(async move { tui::App::new(rx_tui, tx_msg) });
             }
-            if tui {
-                tokio::spawn(async move { tui::App::new(rx_tui, tx_send_audio, tx_receive_audio) });
-                std::process::exit(0);
-            }
+            run_coordinator(
+                rx_msg,
+                tx_playback.clone(),
+                tx_record.clone(),
+                tx_tui.clone(),
+                tx_net_out.clone(),
+                tx_net_in.clone(),
+            )
             // TODO: wait for ctrl-c in non-tui mode, send Bye to server
             // TODO: probably need a mpmc channel for that
             //match signal::ctrl_c().await {
