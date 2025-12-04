@@ -2,7 +2,7 @@ use std::{net::SocketAddr, sync::mpsc::{Receiver, Sender}};
 
 use crate::{client::ClientMessage, server::Message};
 
-pub fn run_coordinator(
+pub async fn run_coordinator(
     rx_msg: Receiver<ClientMessage>,
     tx_playback: Sender<ClientMessage>,
     tx_record: Sender<ClientMessage>,
@@ -41,6 +41,15 @@ pub fn run_coordinator(
             }
             ClientMessage::DeleteClient(addr) => {
                 tx_tui.send(ClientMessage::DeleteClient(addr)).unwrap();
+            }
+            ClientMessage::Exit => {
+                tx_net_out.send(Message::Bye).unwrap();
+                tx_net_out.send(Message::Bye).unwrap();
+                tx_net_out.send(Message::Bye).unwrap();
+                let _ = tokio::spawn(async move {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                    std::process::exit(0);
+                }).await;
             }
             _ => {}
         }

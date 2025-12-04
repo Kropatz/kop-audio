@@ -169,7 +169,7 @@ fn main() {
                 tx_tui.clone(),
                 tx_net_out.clone(),
                 tx_net_in.clone(),
-            )
+            ).await;
             // TODO: wait for ctrl-c in non-tui mode, send Bye to server
             // TODO: probably need a mpmc channel for that
             //match signal::ctrl_c().await {
@@ -194,10 +194,11 @@ fn main() {
 
 fn help() {
     println!(
-        "Usage: {} [--server|--client] [--ip <address:port>]",
+        "Usage: {} [--server|--client] [--ip <address:port>] [--no-tui]",
         std::env::args().next().unwrap()
     );
     println!("If neither --server nor --client is specified, defaults to --client.");
     println!("--ip specifies the IP address and port to connect to.");
+    println!("--no-tui disables the terminal user interface.");
     std::process::exit(0);
 }
