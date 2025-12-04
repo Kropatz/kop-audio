@@ -116,6 +116,9 @@ pub async fn receive_udp(
             Message::DeleteClient(addr) => {
                 let _ = tx.send(ClientMessage::DeleteClient(addr));
             }
+            Message::Hello(addr) => {
+                let _ = tx.send(ClientMessage::Connect);
+            }
             _ => {}
         }
     }
