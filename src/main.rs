@@ -13,6 +13,7 @@ use crate::audio::{play_audio, record_audio};
 use crate::client::NetworkClient;
 use crate::coordinator::run_coordinator;
 use crate::implementations::pulseaudio::{PulseAudioConsumer, PulseAudioProducer};
+use crate::mp3player::decode_mp3;
 
 mod audio;
 mod client;
@@ -20,6 +21,7 @@ mod coordinator;
 mod implementations;
 mod server;
 mod tui;
+mod mp3player;
 
 const SAMPLE_RATE: u32 = 48000;
 const CHANNELS: usize = 2;
@@ -57,9 +59,9 @@ fn main() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         let mut server = false;
-        let mut client = false;
-        let mut tui = false;
-        let mut tui_set = false;
+        let mut client = true;
+        let mut test_audio = false;
+        let mut tui = true;
         let mut debug = false;
         let mut ip = "kopatz.dev:1234".to_string();
         let mut args = std::env::args().skip(1).peekable();
@@ -87,14 +89,16 @@ fn main() {
 
         while let Some(arg) = args.next() {
             match arg.as_str() {
-                "--server" => server = true,
-                "--client" => {
-                    client = true;
-                    tui = true;
+                "--test-audio" => {
+                    test_audio = true;
+                    client = false;
+                }
+                "--server" => {
+                    server = true;
+                    client = false;
                 }
                 "--no-tui" => {
                     tui = false;
-                    tui_set = true;
                 }
                 "--ip" => {
                     if let Some(val) = args.next() {
@@ -117,11 +121,9 @@ fn main() {
         if server && client {
             eprintln!("Cannot be both client and server");
             return;
-        } else if !server && !client {
-            client = true;
-            if !tui_set {
-                tui = true;
-            }
+        }
+        if !client && tui {
+            tui = false;
         }
         if !tui {
             env_logger::Builder::from_env(env_logger::Env::default().filter_or("RUST_LOG", "info"))
@@ -169,7 +171,8 @@ fn main() {
                 tx_tui.clone(),
                 tx_net_out.clone(),
                 tx_net_in.clone(),
-            ).await;
+            )
+            .await;
             // TODO: wait for ctrl-c in non-tui mode, send Bye to server
             // TODO: probably need a mpmc channel for that
             //match signal::ctrl_c().await {
@@ -186,6 +189,25 @@ fn main() {
             info!("Listening on 0.0.0.0:1234");
             //receive_audio(Arc::new(listener)).await;
             server::server_loop(listener).await;
+        } else if test_audio {
+            println!("Playing test audio from seashore.mp3");
+            let mut audio_consumer = PulseAudioConsumer::new().unwrap();
+            let data = decode_mp3("seashore.mp3");
+            println!("Decoded {} samples", data.len());
+            let data = mp3player::resample_to_48k(&data, 44100);
+            println!("Resampled to {} samples", data.len());
+            let mut i = 0;
+            //for chunk in data.chunks_exact((FRAME_SIZE * CHANNELS) as usize) {
+            //    println!("Playing chunk {}", i);
+            //    i += 1;
+            //    let mut buf = vec![0u8; BUF_SIZE as usize];
+            //    for (i, sample) in chunk.iter().enumerate() {
+            //        let s = (sample * 32767.0) as i16;
+            //        buf[i * 2] = (s & 0xFF) as u8;
+            //        buf[i * 2 + 1] = ((s >> 8) & 0xFF) as u8;
+            //    }
+            //    audio_consumer.consume(&buf).unwrap();
+            //}
         } else {
             eprintln!("Must specify either --client or --server");
         }
