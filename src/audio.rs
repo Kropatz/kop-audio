@@ -2,7 +2,7 @@ use std::{
     slice,
     sync::mpsc::{Receiver, Sender},
     thread::sleep,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use log::{debug, error};
@@ -11,7 +11,7 @@ use opus::{Channels, Decoder, Encoder};
 use crate::{
     AudioProducer, BUF_SIZE, CHANNELS, Consumer, FRAME_SIZE, SAMPLE_RATE,
     client::ClientMessage,
-    implementations::pulseaudio::{PulseAudioConsumer, PulseAudioProducer},
+    implementations::pulseaudio::{PulseAudioConsumer, PulseAudioProducer}, server::AudioData,
 };
 use opus::Application::Voip;
 
@@ -26,6 +26,8 @@ pub fn record_audio(
     let mut hangover = 0;
     let mut muted = false;
     let hangover_limit = 10;
+    let mut sequence_number: u32 = 0;
+    let mut timestamp: u64 = 0;
     loop {
         match rx.try_recv() {
             Ok(ClientMessage::ToggleMute) => {
@@ -68,8 +70,14 @@ pub fn record_audio(
             data.len() / 2,
             n,
         );
+        timestamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis() as u64;
+        sequence_number = sequence_number.wrapping_add(1);
         let _ = tx.send(ClientMessage::TransmitAudio(true));
-        let _ = tx.send(ClientMessage::Audio(encoded_data[..n].to_vec()));
+        let _ = tx.send(ClientMessage::Audio(AudioData {
+            timestamp,
+            seq_number: sequence_number,
+            data: encoded_data[..n].to_vec(),
+        }));
     }
 }
 
@@ -79,12 +87,12 @@ pub fn play_audio(rx: Receiver<ClientMessage>, consumer: &mut PulseAudioConsumer
     let mut deafened = false;
     for msg in rx.iter() {
         match msg {
-            ClientMessage::RecvAudio(audio, _) => {
+            ClientMessage::RecvAudio(_, audio) => {
                 if deafened {
                     sleep(Duration::from_millis(20));
                     continue;
                 }
-                let b = decoder.decode(&audio, &mut decoded_data, false).unwrap();
+                let b = decoder.decode(&audio.data, &mut decoded_data, false).unwrap();
                 match consumer.consume(unsafe {
                     slice::from_raw_parts(
                         decoded_data.as_ptr() as *const u8,

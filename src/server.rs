@@ -6,9 +6,16 @@ use log::{debug, error, info, warn};
 use tokio::net::UdpSocket;
 
 #[derive(Encode, Decode, PartialEq, Debug)]
+pub struct AudioData {
+    pub timestamp: u64,
+    pub seq_number: u32,
+    pub data: Vec<u8>,
+}
+
+#[derive(Encode, Decode, PartialEq, Debug)]
 pub enum Message {
-    Audio(Vec<u8>), // decoded audio packet
-    AudioFrom(std::net::SocketAddr, Vec<u8>),
+    Audio(AudioData), // decoded audio packet
+    AudioFrom(std::net::SocketAddr, AudioData),
     Ping,
     Hello(std::net::SocketAddr), // maybe UTF-8
     NewClient(std::net::SocketAddr),
@@ -71,7 +78,7 @@ pub async fn server_loop(socket: UdpSocket) {
             Message::Audio(data) => {
                 debug!(
                     "Received audio packet of {} bytes from {}",
-                    data.len(),
+                    data.data.len(),
                     addr
                 );
                 let msg = Message::AudioFrom(addr, data);

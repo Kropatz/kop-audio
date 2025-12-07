@@ -22,6 +22,7 @@ mod implementations;
 mod server;
 mod tui;
 mod mp3player;
+mod jitter;
 
 const SAMPLE_RATE: u32 = 48000;
 const CHANNELS: usize = 2;

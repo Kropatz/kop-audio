@@ -23,9 +23,9 @@ pub async fn run_coordinator(
                 tx_tui.send(ClientMessage::TransmitAudio(true)).unwrap();
                 tx_net_out.send(Message::Audio(audio)).unwrap();
             }
-            ClientMessage::RecvAudio(audio, addr) => {
-                tx_playback.send(ClientMessage::RecvAudio(audio, addr)).unwrap();
-                tx_tui.send(ClientMessage::RecvAudio(vec![], addr)).unwrap();
+            ClientMessage::RecvAudio(addr, audio) => {
+                tx_playback.send(ClientMessage::RecvAudio(addr, audio)).unwrap();
+                tx_tui.send(ClientMessage::ShowActive(addr)).unwrap();
             }
             ClientMessage::ToggleMute => {
                 tx_record.send(ClientMessage::ToggleMute).unwrap();

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 use tokio::net::{UdpSocket, lookup_host};
 
-use crate::server::{Message, decode_message, encode_message};
+use crate::server::{AudioData, Message, decode_message, encode_message};
 use crate::{BUF_SIZE, ErrorKind, MSG_SIZE, client};
 
 /// A network consumer that takes audio data and sends it over UDP
@@ -18,13 +18,16 @@ pub struct NetworkClient {
     // communication with TUI
     tx: Sender<ClientMessage>,
 }
+
 pub enum ClientMessage {
     Connect,
     Disconnect,
     ToggleMute,
     ToggleDeafen,
-    Audio(Vec<u8>),
-    RecvAudio(Vec<u8>, std::net::SocketAddr),
+    Audio(AudioData),
+    RecvAudio(std::net::SocketAddr, AudioData),
+    // TUI messages
+    ShowActive(std::net::SocketAddr),
     TransmitAudio(bool),
     NewClient(std::net::SocketAddr),
     DeleteClient(std::net::SocketAddr),
@@ -107,8 +110,8 @@ pub async fn receive_udp(
         let msg = decode_message(&data[..len]);
         debug!("Received message of type {:?}", msg);
         match msg {
-            Message::AudioFrom(addr, encoded_data) => {
-                let _ = tx.send(ClientMessage::RecvAudio(encoded_data, addr));
+            Message::AudioFrom(addr, data) => {
+                let _ = tx.send(ClientMessage::RecvAudio(addr, data));
             }
             Message::NewClient(addr) => {
                 let _ = tx.send(ClientMessage::NewClient(addr));

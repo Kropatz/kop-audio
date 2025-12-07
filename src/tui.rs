@@ -101,7 +101,7 @@ impl App {
                         .users
                         .retain(|user| user.addr != addr.to_string());
                 }
-                ClientMessage::RecvAudio(_, addr) => {
+                ClientMessage::ShowActive(addr) => {
                     if let Some(user) = self
                         .main_widget
                         .users
